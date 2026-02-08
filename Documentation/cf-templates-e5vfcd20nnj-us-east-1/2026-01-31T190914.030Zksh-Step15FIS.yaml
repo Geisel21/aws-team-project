@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 15: Chaos Engineering - Simulate Region 1 Failure (FIS) - Tag Fixed'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: "DCT-Mission-Available"
+  TargetTagValue:
+    Type: String
+    # ✅ UPDATED: Matches your actual EC2 Instance Name tag
+    Default: "DCT-us-east-1-WEB-SERVER" 
+    Description: "The Name tag value of your EC2 instances in Virginia"
+
+Resources:
+  # =====================================================================
+  # 1. IAM ROLE FOR FIS
+  # =====================================================================
+  FisRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "DCT-FIS-Chaos-Role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: fis.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "AllowEC2Disruption"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances 
+                  - ec2:StopInstances
+                Resource: "*"
+
+  # =====================================================================
+  # 2. FIS EXPERIMENT TEMPLATE
+  # =====================================================================
+  RegionFailureExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: "Simulate Complete Region 1 Failure by Stopping Web Fleet"
+      RoleArn: !GetAtt FisRole.Arn
+      StopConditions:
+        - Source: "none"
+      Tags:
+        Name: "DCT-Simulate-Region-Failure"
+      
+      Targets:
+        WebFleet:
+          ResourceType: "aws:ec2:instance"
+          SelectionMode: "ALL"
+          # FIX: Hardcoded "Name" key with your specific Tag Value
+          ResourceTags:
+            Name: !Ref TargetTagValue
+
+      Actions:
+        StopInstances:
+          ActionId: "aws:ec2:stop-instances"
+          # No parameters needed. Just STOP. ASG will handle the rest.
+          Targets:
+            Instances: "WebFleet"
+          Description: "Stop all Web Servers immediately"
+
+Outputs:
+  ExperimentId:
+    Description: "The ID of the Chaos Experiment"
+    Value: !Ref RegionFailureExperiment

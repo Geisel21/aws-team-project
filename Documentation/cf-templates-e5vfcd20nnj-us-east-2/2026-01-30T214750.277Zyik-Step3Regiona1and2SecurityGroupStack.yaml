@@ -1,0 +1,161 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 3: Centralized Regional Security Groups (Standardized HA)'
+
+Resources:
+  # 1. ALB Security Group (Public)
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Public Load Balancer - Allow HTTP"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-ALB-SG"
+
+  # 2. EC2 Web Security Group (Base)
+  EC2WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Private App Servers - Web Traffic and SSH"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-EC2-WEB-SG"
+
+  # 3. EC2 Instance Connect (EIC) Security Group (Base)
+  EICSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "EIC Endpoint Access"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-EIC-SG"
+
+  # --- RULES TO BREAK CIRCULAR DEPENDENCY ---
+  WebSSHIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EC2WebSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      SourceSecurityGroupId: !Ref EICSecurityGroup
+
+  EICEgressRule:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref EICSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      DestinationSecurityGroupId: !Ref EC2WebSecurityGroup
+
+  # 4. EC2 Database Access Security Group
+  EC2DatabaseAccessSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "EC2 to Database Access Group"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-EC2-DB-SG"
+
+  # 5. Lambda Common Security Group
+  LambdaCommonSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Unified Lambda Security Group"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-LAMBDA-COMMON-SG"
+
+  # 6. Aurora Database Security Group
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Private Database - Allow Lambda and EC2-DB-SG"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref LambdaCommonSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2DatabaseAccessSG
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-AURORA-SG"
+
+  # 7. Secrets Manager Endpoint SG
+  SecretsVPCSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Secrets Manager VPCE - Allow Lambda/EC2"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaCommonSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EC2DatabaseAccessSG
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-SECRETS-SG"
+
+  # 8. API Gateway Endpoint SG
+  ApiVPCSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "API Gateway VPCE - Allow EC2"
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EC2WebSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-API-SG"
+
+Outputs:
+  ALBSG:
+    Value: !Ref ALBSecurityGroup
+    Export: { Name: !Sub "REGION-${AWS::Region}-ALB-SG" }
+  EC2WebSG:
+    Value: !Ref EC2WebSecurityGroup
+    Export: { Name: !Sub "REGION-${AWS::Region}-EC2-WEB-SG" }
+  EC2DbSG:
+    Value: !Ref EC2DatabaseAccessSG
+    Export: { Name: !Sub "REGION-${AWS::Region}-EC2-DB-SG" }
+  AuroraSG:
+    Value: !Ref AuroraSecurityGroup
+    Export: { Name: !Sub "REGION-${AWS::Region}-AURORA-SG" }
+  LambdaSG:
+    Value: !Ref LambdaCommonSecurityGroup
+    Export: { Name: !Sub "REGION-${AWS::Region}-LAMBDA-SG" }
+  SecretsSG:
+    Value: !Ref SecretsVPCSG
+    Export: { Name: !Sub "REGION-${AWS::Region}-SECRETS-SG" }
+  ApiSG:
+    Value: !Ref ApiVPCSG
+    Export: { Name: !Sub "REGION-${AWS::Region}-API-SG" }
+  EICSG:
+    Value: !Ref EICSecurityGroup
+    Export: { Name: !Sub "REGION-${AWS::Region}-EIC-SG" }

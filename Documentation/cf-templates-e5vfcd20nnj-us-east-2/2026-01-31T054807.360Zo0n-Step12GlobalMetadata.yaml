@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 12: Unified Regional Metadata Secret - Multi-Region Compatible'
+
+Parameters:
+  GlobalDbId:
+    Type: String
+    Default: "dct-global-database"
+    Description: "The Global Database Identifier (Same for both regions)"
+
+Resources:
+  # This secret aggregates all regional exports into one JSON object
+  InfraMetadataSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "DCT-${AWS::Region}-INFRA-METADATA"
+      Description: !Sub "Infrastructure metadata for ${AWS::Region}"
+      SecretString:
+        Fn::Sub:
+          - |
+            {
+              "Networking": {
+                "VpcId": "${VpcId}",
+                "PublicSubnets": "${PubSubs}",
+                "PrivateSubnets": "${PrivSubs}",
+                "IGW": "${Igw}",
+                "NAT": "${Nat}",
+                "EIP": "${Eip}"
+              },
+              "Security": {
+                "SGs": {
+                  "ALB": "${AlbSg}",
+                  "Web": "${WebSg}",
+                  "Database": "${DbSg}",
+                  "Aurora": "${AuroraSg}",
+                  "Lambda": "${LambdaSg}"
+                }
+              },
+              "Endpoints": {
+                "SecretsVPCE": "${SecretsVpce}",
+                "ApiVPCE": "${ApiVpce}",
+                "EIC": "${Eic}"
+              },
+              "Database": {
+                "GlobalClusterId": "${GlobalId}",
+                "RegionalEndpoint": "${DbEndpoint}",
+                "SecretArn": "${DbSecretArn}"
+              },
+              "Application": {
+                "ApiUrl": "${ApiUrl}",
+                "HealthCheckUrl": "${HcUrl}",
+                "AlbDns": "${AlbDns}",
+                "AsgName": "${AsgName}"
+              }
+            }
+          - VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" } #
+            PubSubs: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PUB-SUBS" } #
+            PrivSubs: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } #
+            [cite_start]Igw: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-IGW-ID" } # [cite: 2]
+            [cite_start]Nat: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-NGW-ID" } # [cite: 2]
+            [cite_start]Eip: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-NAT-EIP" } # [cite: 2]
+            [cite_start]AlbSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-ALB-SG" } # [cite: 3]
+            [cite_start]WebSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EC2-WEB-SG" } # [cite: 3]
+            [cite_start]DbSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EC2-DB-SG" } # [cite: 3]
+            [cite_start]AuroraSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-AURORA-SG" } # [cite: 3]
+            [cite_start]LambdaSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-LAMBDA-SG" } # [cite: 3]
+            [cite_start]SecretsVpce: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPCE-SECRETS-ID" } # [cite: 4]
+            [cite_start]ApiVpce: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPCE-API-ID" } # [cite: 4]
+            [cite_start]Eic: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EIC-ENDPOINT-ID" } # [cite: 4]
+            GlobalId: !Ref GlobalDbId # Passed as Parameter to avoid cross-region Export error
+            DbEndpoint: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-DB-ENDPOINT" } #
+            DbSecretArn: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-AURORA-SECRET-ARN" } #
+            [cite_start]ApiUrl: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-API-URL" } # [cite: 8]
+            [cite_start]HcUrl: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-HC-URL" } # [cite: 9]
+            [cite_start]AlbDns: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-ALB-DNS" } # [cite: 10]
+            [cite_start]AsgName: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-ASG-NAME" } # [cite: 11]
+
+Outputs:
+  MetadataSecretArn:
+    Value: !Ref InfraMetadataSecret
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-METADATA-SECRET-ARN"

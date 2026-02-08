@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 7: Automated Regional Database Schema Initialization (Ubuntu) - Long Form'
+
+Resources:
+  DBManagerInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M 
+        Count: 1
+    Properties:
+      ImageId: 
+        Fn::ImportValue: !Sub "REGION-${AWS::Region}-AMI"
+      InstanceType: t4g.micro 
+      # Fixed to use long-form for stability
+      SubnetId: 
+        Fn::Select: 
+          - 0
+          - Fn::Split: 
+              - ","
+              - Fn::ImportValue: !Sub "REGION-${AWS::Region}-PRIV-SUBS"
+      IamInstanceProfile: 
+        Fn::ImportValue: "GLOBAL-MGMT-PROFILE"
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "REGION-${AWS::Region}-EC2-DB-SG"
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-DB-MANAGER"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # 1. System Setup
+          apt-get update -y
+          apt-get install -y mysql-client jq awscli
+
+          # 2. Wait for Networking and VPC Endpoints to be ready
+          sleep 45
+
+          # 3. Discovery Logic
+          # Get the secret name we exported in Step 6.1
+          SECRET_NAME="dct-${AWS::Region}-aurora-secret"
+          
+          # 4. Wait for Database Cluster to be 'available'
+          echo "Checking Database Status..."
+          until aws rds describe-db-clusters --db-cluster-identifier "DCT-${AWS::Region}-AURORA" --region ${AWS::Region} --query 'DBClusters[0].Status' --output text | grep -q "available"; do
+            echo "Database not ready yet..."
+            sleep 30
+          done
+
+          # 5. Extract Connection Info from Secrets Manager
+          # We grab the whole JSON and parse out the host and password
+          SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "$SECRET_NAME" --region ${AWS::Region} --query 'SecretString' --output text)
+          DB_HOST=$(echo $SECRET_JSON | jq -r .host)
+          DB_PASSWORD=$(echo $SECRET_JSON | jq -r .password)
+
+          # 6. Execute Schema Creation
+          mysql -h "$DB_HOST" -u admin -p"$DB_PASSWORD" <<EOF
+          CREATE DATABASE IF NOT EXISTS dctapp;
+          USE dctapp;
+          CREATE TABLE IF NOT EXISTS health_check (
+            id INT AUTO_INCREMENT PRIMARY KEY, 
+            status VARCHAR(50), 
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+          );
+          INSERT INTO health_check (status) VALUES ('healthy');
+          CREATE TABLE IF NOT EXISTS submissions (
+            id INT AUTO_INCREMENT PRIMARY KEY, 
+            name VARCHAR(100) DEFAULT 'Anonymous', 
+            message TEXT, 
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+          EOF
+
+          # 7. Signal success back to CloudFormation
+          # If the mysql command failed, $? will be non-zero and the stack will rollback
+          /usr/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource DBManagerInstance --region ${AWS::Region}
+
+Outputs:
+  ManagerInstanceId:
+    Value: !Ref DBManagerInstance
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-DB-MANAGER-ID"

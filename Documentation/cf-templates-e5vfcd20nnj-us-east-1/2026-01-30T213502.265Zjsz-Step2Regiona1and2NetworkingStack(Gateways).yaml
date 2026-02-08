@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 2: Internet and NAT Gateways with Multi-AZ Dynamic Imports'
+
+Resources:
+  # 1. Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-IGW"
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: 
+        Fn::ImportValue: !Sub "REGION-${AWS::Region}-VPC-ID"
+      InternetGatewayId: !Ref InternetGateway
+
+  # 2. Public Route to Internet
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: 
+        Fn::ImportValue: !Sub "REGION-${AWS::Region}-PUB-RT"
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # 3. NAT Gateway (Requires Elastic IP)
+  NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-NAT-EIP"
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      # Logic: Split the "Subnet1,Subnet2" string into a list and select the first one
+      SubnetId: 
+        Fn::Select: [ 0, !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PUB-SUBS" } ] ]
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-NGW"
+
+  # 4. Private Route to NAT Gateway
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: 
+        Fn::ImportValue: !Sub "REGION-${AWS::Region}-PRIV-RT"
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+Outputs:
+  InternetGatewayId:
+    Value: !Ref InternetGateway
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-IGW-ID"
+
+  NatGatewayId:
+    Value: !Ref NatGateway
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-NGW-ID"
+
+  NatEipAddress:
+    Value: !Ref NatEip
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-NAT-EIP"

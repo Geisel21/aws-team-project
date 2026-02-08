@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 6.1: Aurora Global Database - Secondary Cluster & Secrets (Ohio)'
+
+Resources:
+  # 1. DB Subnet Group (Fixed Long-Form Syntax)
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnets for DCT Aurora Secondary Cluster"
+      SubnetIds: 
+        Fn::Split: 
+          - ","
+          - Fn::ImportValue: !Sub "REGION-${AWS::Region}-PRIV-SUBS"
+      DBSubnetGroupName: !Sub "dct-${AWS::Region}-db-subnet-group"
+
+  # 2. Secondary DB Cluster
+  SecondaryDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub "DCT-${AWS::Region}-AURORA"
+      GlobalClusterIdentifier: "dct-global-database" # Links to Virginia
+      Engine: "aurora-mysql"
+      EngineVersion: "8.0.mysql_aurora.3.10.3"
+      EngineMode: "provisioned"
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      EnableLocalWriteForwarding: true
+      VpcSecurityGroupIds: 
+        - Fn::ImportValue: !Sub "REGION-${AWS::Region}-AURORA-SG"
+      StorageEncrypted: true
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 2.0
+
+  # 3. Secondary DB Instance
+  SecondaryDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "DCT-${AWS::Region}-AURORA-INSTANCE-1"
+      DBClusterIdentifier: !Ref SecondaryDBCluster
+      DBInstanceClass: "db.serverless"
+      Engine: "aurora-mysql"
+      EngineVersion: "8.0.mysql_aurora.3.10.3"
+
+  # 4. Ohio Local Secret (Pointing to the Ohio Endpoint)
+  AuroraSecretOhio:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: "dct-us-east-2-aurora-secret"
+      Description: "Connection credentials for the Ohio Secondary Cluster"
+      SecretString: 
+        Fn::Sub: 
+          - '{"username":"admin","password":"YourSecurePassword123!","host":"${DBEndpoint}","port":"3306","engine":"mysql"}'
+          - DBEndpoint: !GetAtt SecondaryDBCluster.Endpoint.Address
+      Tags:
+        - Key: Project
+          Value: "DCT-Active-Active"
+
+Outputs:
+  DBClusterEndpoint:
+    Description: "Secondary Cluster Endpoint"
+    Value: !GetAtt SecondaryDBCluster.Endpoint.Address
+    Export:
+      Name: 
+        Fn::Sub: "REGION-${AWS::Region}-DB-ENDPOINT"
+
+  SecretArn:
+    Value: !Ref AuroraSecretOhio
+    Export:
+      Name: 
+        Fn::Sub: "REGION-${AWS::Region}-AURORA-SECRET-ARN"

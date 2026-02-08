@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 12: Master Metadata Secret - All 34 Infrastructure Variables'
+
+Parameters:
+  MyDomainName:
+    Type: String
+    Default: "lets.testwitha.click"
+  GlobalDbId:
+    Type: String
+    Default: "dct-global-database"
+  DbManagerIdParam:
+    Type: String
+    Default: "not-deployed"
+
+Resources:
+  InfraMetadataSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "DCT-${AWS::Region}-INFRA-METADATA"
+      Description: !Sub "Final audited metadata for ${AWS::Region}"
+      SecretString:
+        Fn::Sub:
+          - |
+            {
+              "ProjectConfig": {
+                "DomainName": "${Domain}",
+                "Region": "${AWS::Region}"
+              },
+              "Networking": {
+                "VpcId": "${VpcId}",
+                "PublicSubnets": "${PubSubs}",
+                "PrivateSubnets": "${PrivSubs}",
+                "PublicRouteTable": "${PubRt}",
+                "PrivateRouteTable": "${PrivRt}",
+                "IGW": "${Igw}",
+                "NAT": "${Nat}",
+                "EIP": "${Eip}",
+                "ApprovedAMI": "${Ami}"
+              },
+              "Security": {
+                "SGs": {
+                  "ALB": "${AlbSg}",
+                  "Web": "${WebSg}",
+                  "DatabaseAccess": "${DbSg}",
+                  "Aurora": "${AuroraSg}",
+                  "Lambda": "${LambdaSg}",
+                  "SecretsVPCE": "${SecretsSg}",
+                  "ApiVPCE": "${ApiSg}",
+                  "EIC": "${EicSg}"
+                }
+              },
+              "Endpoints": {
+                "SecretsVPCE_ID": "${SecretsVpceId}",
+                "ApiVPCE_ID": "${ApiVpceId}",
+                "EIC_Endpoint_ID": "${EicEndpointId}"
+              },
+              "IAM_Profiles": {
+                "MgmtProfile": "GLOBAL-MGMT-PROFILE",
+                "WebProfile": "GLOBAL-WEB-PROFILE",
+                "WebLambdaRole": "GLOBAL-WEB-LAMBDA-ROLE-ARN",
+                "HCLambdaRole": "GLOBAL-HC-LAMBDA-ROLE-ARN"
+              },
+              "Database": {
+                "GlobalClusterId": "${GlobalId}",
+                "RegionalEndpoint": "${DbEndpoint}",
+                "SecretArn": "${DbSecretArn}",
+                "SecretName": "dct-${AWS::Region}-aurora-secret"
+              },
+              "Application": {
+                "ApiUrl": "${ApiUrl}",
+                "ApiHost": "${ApiHost}",
+                "HealthCheckUrl": "${HcUrl}",
+                "HCHost": "${HCHost}",
+                "AlbDns": "${AlbDns}",
+                "TargetGroupArn": "${TgArn}",
+                "AsgName": "${AsgName}",
+                "DbManagerId": "${DbMgr}"
+              }
+            }
+          - Domain: !Ref MyDomainName
+            VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+            PubSubs: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PUB-SUBS" }
+            PrivSubs: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" }
+            PubRt: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PUB-RT" }
+            PrivRt: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-RT" }
+            Ami: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-AMI" }
+            Igw: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-IGW-ID" }
+            Nat: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-NGW-ID" }
+            Eip: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-NAT-EIP" }
+            AlbSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-ALB-SG" }
+            WebSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EC2-WEB-SG" }
+            DbSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EC2-DB-SG" }
+            AuroraSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-AURORA-SG" }
+            LambdaSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-LAMBDA-SG" }
+            SecretsSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-SECRETS-SG" }
+            ApiSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-API-SG" }
+            EicSg: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EIC-SG" }
+            SecretsVpceId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPCE-SECRETS-ID" }
+            ApiVpceId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPCE-API-ID" }
+            EicEndpointId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EIC-ENDPOINT-ID" }
+            GlobalId: !Ref GlobalDbId
+            DbEndpoint: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-DB-ENDPOINT" }
+            DbSecretArn: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-AURORA-SECRET-ARN" }
+            ApiUrl: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-API-URL" }
+            # API host extraction
+            ApiHost: !Select [ 2, !Split [ "/", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-API-URL" } ] ]
+            HcUrl: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-HC-URL" }
+            # Health Check host extraction
+            HCHost: !Select [ 2, !Split [ "/", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-HC-URL" } ] ]
+            TgArn: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-TARGET-GROUP-ARN" }
+            AlbDns: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-ALB-DNS" }
+            AsgName: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-ASG-NAME" }
+            DbMgr: !Ref DbManagerIdParam
+
+Outputs:
+  MetadataSecretArn:
+    Value: !Ref InfraMetadataSecret
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-METADATA-SECRET-ARN"

@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 13: Final Global Route 53 - Active-Active Weighting with Health Checks'
+
+Parameters:
+  Region1SecretArn:
+    Type: String
+    Description: "The FULL ARN of the Virginia Metadata Secret"
+    Default: "arn:aws:secretsmanager:us-east-1:327982942129:secret:DCT-us-east-1-INFRA-METADATA-w9tO0C"
+  Region2SecretArn:
+    Type: String
+    Description: "The FULL ARN of the Ohio Metadata Secret"
+    Default: "arn:aws:secretsmanager:us-east-2:327982942129:secret:DCT-us-east-2-INFRA-METADATA-kDb3My"
+
+Resources:
+  # ==========================================
+  # 1. VIRGINIA HEALTH CHECKS (MONITORING HC API)
+  # ==========================================
+  Region1APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # Pulls the clean HC host from your updated VA secret
+        FullyQualifiedDomainName: !Join [ ":", [ "{{resolve:secretsmanager", !Ref Region1SecretArn, "SecretString:Application.HCHost}}" ] ]
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-VA-APP-HEALTH"
+
+  # ==========================================
+  # 2. OHIO HEALTH CHECKS (MONITORING HC API)
+  # ==========================================
+  Region2APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # Pulls the clean HC host from your updated Ohio secret
+        FullyQualifiedDomainName: !Join [ ":", [ "{{resolve:secretsmanager", !Ref Region2SecretArn, "SecretString:Application.HCHost}}" ] ]
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-OH-APP-HEALTH"
+
+  # ==========================================
+  # 3. WEIGHTED DNS RECORDS (50/50 TRAFFIC SPLIT)
+  # ==========================================
+
+  VirginiaWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "lets.testwitha.click."
+      Name: "api.lets.testwitha.click"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "VA-PRIMARY"
+      Weight: 50
+      ResourceRecords:
+        - !Join [ ":", [ "{{resolve:secretsmanager", !Ref Region1SecretArn, "SecretString:Application.AlbDns}}" ] ]
+      HealthCheckId: !Ref Region1APIHC
+
+  OhioWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "lets.testwitha.click."
+      Name: "api.lets.testwitha.click"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "OH-PRIMARY"
+      Weight: 50
+      ResourceRecords:
+        - !Join [ ":", [ "{{resolve:secretsmanager", !Ref Region2SecretArn, "SecretString:Application.AlbDns}}" ] ]
+      HealthCheckId: !Ref Region2APIHC
+
+Outputs:
+  VAHealthCheckId:
+    Value: !Ref Region1APIHC
+  OHHealthCheckId:
+    Value: !Ref Region2APIHC

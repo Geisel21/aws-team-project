@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 14: Production-Grade Aurora Failover Automation'
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: "aniket.gangwar.92@gmail.com"
+  GlobalDbId:
+    Type: String
+    Default: "dct-global-database"
+  TargetRegion:
+    Type: String
+    Default: "us-east-2"
+
+Resources:
+  # 1. ALERT TOPIC (Email Only)
+  FailoverAlertSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: "DCT-GLOBAL-FAILOVER-ALERTS"
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  # 2. TRIGGER TOPIC (Lambda Only)
+  FailoverTriggerSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: "DCT-GLOBAL-FAILOVER-TRIGGER"
+
+  # 3. ORDERED SUBSCRIPTION
+  LambdaSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: SNSInvokeLambdaPermission
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref FailoverTriggerSNSTopic
+      Endpoint: !GetAtt FailoverFunction.Arn
+
+  # 4. IAM ROLE (Corrected Global ARN)
+  FailoverLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RDSFailoverPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:FailoverGlobalCluster
+                  - rds:DescribeGlobalClusters
+                Resource: !Sub "arn:aws:rds::global-cluster:${GlobalDbId}"
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref FailoverAlertSNSTopic
+
+  # 5. LAMBDA FUNCTION (Refined Parsing & State Checks)
+  FailoverFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "DCT-Aurora-Global-Failover"
+      Handler: "index.lambda_handler"
+      Role: !GetAtt FailoverLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 120 
+      Environment:
+        Variables:
+          GLOBAL_DB_ID: !Ref GlobalDbId
+          TARGET_CLUSTER_ARN: !Sub "arn:aws:rds:${TargetRegion}:${AWS::AccountId}:cluster:dct-us-east-2-aurora"
+          ALERT_TOPIC_ARN: !Ref FailoverAlertSNSTopic
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+
+          rds = boto3.client('rds')
+          sns = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              GLOBAL_DB_ID = os.environ.get('GLOBAL_DB_ID')
+              TARGET_CLUSTER_ARN = os.environ.get('TARGET_CLUSTER_ARN')
+              ALERT_TOPIC_ARN = os.environ.get('ALERT_TOPIC_ARN')
+
+              try:
+                  # Robust JSON parsing for the SNS Message
+                  sns_message = event['Records'][0]['Sns']['Message']
+                  msg_data = json.loads(sns_message)
+                  
+                  # Validate this is the correct Alarm and in ALARM state
+                  if msg_data.get('NewStateValue') != 'ALARM':
+                      print(f"ℹ️ Skipping: State is {msg_data.get('NewStateValue')}, not ALARM.")
+                      return {"status": "ignored"}
+
+                  # Status/Writer Guard
+                  response = rds.describe_global_clusters(GlobalClusterIdentifier=GLOBAL_DB_ID)
+                  global_cluster = response['GlobalClusters'][0]
+                  
+                  if global_cluster['Status'] != 'available':
+                      return {"status": "skipped", "reason": "Cluster busy"}
+
+                  current_primary = next((m['DBClusterArn'] for m in global_cluster['GlobalClusterMembers'] if m['IsWriter']), "")
+                  if current_primary == TARGET_CLUSTER_ARN:
+                      print("✅ Target already Primary. No action.")
+                      return {"status": "no_action"}
+
+                  print(json.dumps({"action": "failover", "status": "initiated", "target": TARGET_CLUSTER_ARN}))
+                  rds.failover_global_cluster(GlobalClusterIdentifier=GLOBAL_DB_ID, TargetDbClusterIdentifier=TARGET_CLUSTER_ARN)
+                  return {"status": "success"}
+
+              except Exception as e:
+                  print(f"❌ Error: {str(e)}")
+                  sns.publish(TopicArn=ALERT_TOPIC_ARN, Message=f"❌ Failover Failed: {str(e)}", Subject="DR Automation Error")
+                  raise e
+
+  # 6. PERMISSIONS & ALARM
+  SNSInvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref FailoverFunction
+      Principal: "sns.amazonaws.com"
+      SourceArn: !Ref FailoverTriggerSNSTopic
+
+  Region1FailoverAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: "DCT-REGION1-CRITICAL-FAILOVER"
+      AlarmDescription: "Triggers TriggerTopic (Lambda) and AlertTopic (Email)"
+      MetricName: "HealthCheckStatus"
+      Namespace: "AWS/Route53"
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: { "Fn::ImportValue": "REGION-us-east-1-PARENT-HC-ID" }
+      AlarmActions:
+        - !Ref FailoverTriggerSNSTopic
+        - !Ref FailoverAlertSNSTopic

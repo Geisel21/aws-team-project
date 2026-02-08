@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 8: Regional Web Lambda and API Gateway - S3 Source'
+
+Resources:
+  # 1. Web Lambda Function (S3 Source)
+  WebLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "DCT-${AWS::Region}-LAMBDA-WEB"
+      Runtime: python3.12
+      # Uses the Global Role created in Step 5 
+      Role: 
+        Fn::ImportValue: "GLOBAL-WEB-LAMBDA-ROLE-ARN"
+      Handler: lambda_function.lambda_handler
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        S3Bucket: "dct-group-project"
+        S3Key: "lambda_web.zip"
+      # Network configuration from Step 1 and Step 3 
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "REGION-${AWS::Region}-LAMBDA-SG"
+        SubnetIds: !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ]
+      Environment:
+        Variables:
+          # Automatically uses the Endpoint from Step 6 
+          DB_HOST: 
+            Fn::ImportValue: !Sub "REGION-${AWS::Region}-DB-ENDPOINT"
+
+  # 2. REST API Gateway 
+  WebRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "DCT-${AWS::Region}-API-WEB"
+      EndpointConfiguration:
+        Types: [REGIONAL]
+
+  # 3. API Resources (/submit, /retrieve, /region) [cite: 10, 11]
+  SubmitResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt WebRestApi.RootResourceId
+      PathPart: "submit"
+      RestApiId: !Ref WebRestApi
+
+  RetrieveResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt WebRestApi.RootResourceId
+      PathPart: "retrieve"
+      RestApiId: !Ref WebRestApi
+
+  RegionResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt WebRestApi.RootResourceId
+      PathPart: "region"
+      RestApiId: !Ref WebRestApi
+
+  # 4. API Methods (ANY) [cite: 11]
+  SubmitMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: ANY
+      ResourceId: !Ref SubmitResource
+      RestApiId: !Ref WebRestApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebLambdaFunction.Arn}/invocations"
+
+  RetrieveMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: ANY
+      ResourceId: !Ref RetrieveResource
+      RestApiId: !Ref WebRestApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebLambdaFunction.Arn}/invocations"
+
+  RegionMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: ANY
+      ResourceId: !Ref RegionResource
+      RestApiId: !Ref WebRestApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebLambdaFunction.Arn}/invocations"
+
+  # 5. Permission for API to call Lambda [cite: 11]
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WebLambdaFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebRestApi}/*/*/*"
+
+  # 6. Deployment & Stage [cite: 12]
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [SubmitMethod, RetrieveMethod, RegionMethod]
+    Properties:
+      RestApiId: !Ref WebRestApi
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiDeployment
+      RestApiId: !Ref WebRestApi
+      StageName: "prod"
+
+Outputs:
+  ApiUrl:
+    Description: "Base URL for the Web API"
+    Value: !Sub "https://${WebRestApi}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-API-URL"

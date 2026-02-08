@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 4: Regional VPC Endpoints (PrivateLink) with Multi-AZ HA'
+
+Resources:
+  # 1. EC2 Instance Connect (EIC) Endpoint
+  # Note: EIC Endpoints are tied to a single subnet but provide access to the whole VPC
+  InstanceConnectEndpoint:
+    Type: AWS::EC2::InstanceConnectEndpoint
+    Properties:
+      SubnetId: !Select [ 0, !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ] ]
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "REGION-${AWS::Region}-EIC-SG"
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-EIC-ENDPOINT"
+
+  # 2. Secrets Manager Interface Endpoint
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.secretsmanager"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      # Deploys endpoints in both private subnets for HA
+      SubnetIds: !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ]
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "REGION-${AWS::Region}-SECRETS-SG"
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-SECRETS-ENDPOINT"     
+
+  # 3. API Gateway Interface Endpoint
+  ApiGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.execute-api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      # Deploys endpoints in both private subnets for HA
+      SubnetIds: !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ]
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "REGION-${AWS::Region}-API-SG"
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-API-ENDPOINT" 
+Outputs:
+  SecretsEndpointId:
+    Description: "Secrets Manager VPCE ID"
+    Value: !Ref SecretsManagerEndpoint
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-VPCE-SECRETS-ID"
+
+  ApiEndpointId:
+    Description: "API Gateway VPCE ID"
+    Value: !Ref ApiGatewayEndpoint
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-VPCE-API-ID"
+
+  InstanceConnectEndpointId:
+    Description: "EC2 Instance Connect Endpoint ID"
+    Value: !Ref InstanceConnectEndpoint
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-EIC-ENDPOINT-ID"

@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 15: Chaos Engineering - Simulate Region 1 Failure (FIS) - Filters Fix'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: "DCT-Mission-Available"
+  TargetTagValue:
+    Type: String
+    Default: "DCT-us-east-1-LT-WEB" 
+    Description: "The Name tag value of your EC2 instances in Virginia"
+
+Resources:
+  # =====================================================================
+  # 1. IAM ROLE FOR FIS (Updated with Describe Permissions)
+  # =====================================================================
+  FisRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "DCT-FIS-Chaos-Role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: fis.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: "AllowEC2Disruption"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances # REQUIRED for FIS to find targets
+                  - ec2:StopInstances
+                  - ec2:StartInstances
+                Resource: "*"
+
+  # =====================================================================
+  # 2. FIS EXPERIMENT TEMPLATE
+  # =====================================================================
+  RegionFailureExperiment:
+    Type: AWS::FIS::ExperimentTemplate
+    Properties:
+      Description: "Simulate Complete Region 1 Failure by Stopping Web Fleet"
+      RoleArn: !GetAtt FisRole.Arn
+      StopConditions:
+        - Source: "none"
+      Tags:
+        Name: "DCT-Simulate-Region-Failure"
+      
+      Targets:
+        WebFleet:
+          ResourceType: "aws:ec2:instance"
+          SelectionMode: "ALL"
+          # FIX: Using Filters is more robust than ResourceTags for CFN parsing
+          Filters:
+            - Path: "tag:Name"
+              Values: 
+                - !Ref TargetTagValue
+
+      Actions:
+        StopInstances:
+          ActionId: "aws:ec2:stop-instances"
+          Parameters:
+            startInstancesAfterDuration: "true"
+            duration: "PT5M" # Stop for 5 Minutes
+          Targets:
+            Instances: "WebFleet"
+          Description: "Stop all Web Servers for 5 minutes"
+
+Outputs:
+  ExperimentId:
+    Description: "The ID of the Chaos Experiment"
+    Value: !Ref RegionFailureExperiment

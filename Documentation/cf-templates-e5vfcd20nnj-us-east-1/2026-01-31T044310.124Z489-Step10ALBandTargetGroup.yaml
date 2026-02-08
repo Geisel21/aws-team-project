@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 10: Regional Public ALB and Target Group for Web Fleet'
+
+Resources:
+  # 1. Target Group: Defines where the ALB sends traffic 
+  WebTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "DCT-${AWS::Region}-TG-WEB"
+      # Imports the VPC ID from Step 1
+      VpcId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-VPC-ID" }
+      Protocol: HTTP
+      Port: 80
+      TargetType: instance
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-TG"
+
+  # 2. Application Load Balancer: Public-facing entry point 
+  WebALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "DCT-${AWS::Region}-ALB"
+      Scheme: internet-facing
+      Type: application
+      # Imports the ALB Security Group from Step 3
+      SecurityGroups:
+        - { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-ALB-SG" }
+      # Places the ALB in the public subnets from Step 1
+      Subnets: !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PUB-SUBS" } ]
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-ALB"
+
+  # 3. ALB Listener: Forwards HTTP traffic to the Target Group [cite: 19]
+  WebListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebTargetGroup
+      LoadBalancerArn: !Ref WebALB
+      Port: 80
+      Protocol: HTTP
+
+Outputs:
+  TargetGroupArn:
+    Description: "ARN for the Web Target Group"
+    Value: !Ref WebTargetGroup
+    Export:
+      # This export is used by the Auto Scaling Group in the next step
+      Name: !Sub "REGION-${AWS::Region}-TARGET-GROUP-ARN"
+  
+  AlbDnsName:
+    Description: "Public DNS Name of the Load Balancer"
+    Value: !GetAtt WebALB.DNSName
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-ALB-DNS"

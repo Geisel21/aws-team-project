@@ -1,0 +1,185 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 14: Production-Grade Aurora Failover Automation (Naming Bug Fixed)'
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: "aniket.gangwar.92@gmail.com"
+    Description: "Email address to receive critical failover alerts"
+  GlobalDbId:
+    Type: String
+    Default: "dct-global-database"
+    Description: "The identifier of the Aurora Global Cluster"
+  TargetRegion:
+    Type: String
+    Default: "us-east-2"
+    Description: "The Region ID where the Secondary Cluster lives (e.g., us-east-2)"
+
+Resources:
+  # =====================================================================
+  # 1. ALERT TOPIC (For Humans - Email Only)
+  # =====================================================================
+  FailoverAlertSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: "DCT-GLOBAL-FAILOVER-ALERTS"
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  # =====================================================================
+  # 2. TRIGGER TOPIC (For Machines - Lambda Only)
+  # =====================================================================
+  FailoverTriggerSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: "DCT-GLOBAL-FAILOVER-TRIGGER"
+
+
+ # 4. IAM ROLE (Permission Fix Applied)
+  FailoverLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "DCT-FAILOVER-LAMBDA-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RDSFailoverPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # 1. Allow Failover on EVERYTHING (The Fix)
+              # Why? Failover is a complex operation that touches the Global container
+              # AND the specific regional clusters. Restricting by ARN caused the AccessDenied.
+              - Effect: Allow
+                Action:
+                  - rds:FailoverGlobalCluster
+                  - rds:DescribeGlobalClusters
+                  - rds:DescribeDBClusters
+                Resource: "*" 
+                
+              # 2. Allow Sending Alerts (Restricted to Email Topic)
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref FailoverAlertSNSTopic
+
+  # =====================================================================
+  # 4. LAMBDA FUNCTION (The Logic)
+  # =====================================================================
+  FailoverFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "DCT-Aurora-Global-Failover"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FailoverLambdaRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          # CRITICAL: Points to Email Topic
+          ALERT_TOPIC_ARN: !Ref FailoverAlertSNSTopic 
+          GLOBAL_DB_ID: !Ref GlobalDbId
+          # CRITICAL FIX: Matches the naming convention from Step 6.2 (DCT-us-east-2-AURORA)
+          TARGET_CLUSTER_ARN: !Sub "arn:aws:rds:${TargetRegion}:${AWS::AccountId}:cluster:DCT-${TargetRegion}-AURORA"
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+              sns = boto3.client('sns')
+              rds = boto3.client('rds')
+              
+              # Load Vars
+              ALERT_TOPIC = os.environ['ALERT_TOPIC_ARN']
+              GLOBAL_DB = os.environ['GLOBAL_DB_ID']
+              TARGET_DB = os.environ['TARGET_CLUSTER_ARN']
+
+              try:
+                  logger.info("Received Failover Event")
+                  
+                  # 1. SAFETY CHECK: Infinite Loop Protection
+                  try:
+                      message = event['Records'][0]['Sns']['Message']
+                      if "Failover Failed" in message:
+                          logger.warning("Recursive Loop Detected. Aborting.")
+                          return {"status": "aborted", "reason": "recursion_protection"}
+                  except:
+                      pass 
+
+                  # 2. Execute Failover
+                  print(f"Initiating Failover of {GLOBAL_DB} to {TARGET_DB}...")
+                  
+                  response = rds.failover_global_cluster(
+                      GlobalClusterIdentifier=GLOBAL_DB,
+                      TargetDbClusterIdentifier=TARGET_DB
+                  )
+                  
+                  logger.info(f"Failover Command Sent: {response}")
+                  return {"status": "success", "action": "failover_initiated"}
+
+              except Exception as e:
+                  logger.error(f"CRITICAL FAILURE: {str(e)}")
+                  
+                  # 3. Alerting (Safe Path to Email)
+                  sns.publish(
+                      TopicArn=ALERT_TOPIC, 
+                      Message=f"❌ AUTOMATED FAILOVER FAILED for {GLOBAL_DB}.\n\nError Details: {str(e)}\n\nPlease perform manual failover immediately.", 
+                      Subject="CRITICAL: DR Failover Failed"
+                  )
+                  raise e
+
+  # =====================================================================
+  # 5. PERMISSIONS & SUBSCRIPTIONS
+  # =====================================================================
+  SNSInvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref FailoverFunction
+      Principal: "sns.amazonaws.com"
+      SourceArn: !Ref FailoverTriggerSNSTopic
+
+  LambdaSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: SNSInvokeLambdaPermission
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref FailoverTriggerSNSTopic
+      Endpoint: !GetAtt FailoverFunction.Arn
+
+  # =====================================================================
+  # 6. CLOUDWATCH ALARM (Must be in us-east-1)
+  # =====================================================================
+  Region1FailoverAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: "DCT-REGION1-CRITICAL-FAILOVER"
+      AlarmDescription: "Monitors Route53 Health Check. If Unhealthy -> Triggers Lambda."
+      MetricName: "HealthCheckStatus"
+      Namespace: "AWS/Route53"
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          # This Export comes from Step 13 (Route 53)
+          Value: { "Fn::ImportValue": "REGION-us-east-1-PARENT-HC-ID" }
+      AlarmActions:
+        - !Ref FailoverTriggerSNSTopic
+        - !Ref FailoverAlertSNSTopic

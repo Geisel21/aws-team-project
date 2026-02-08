@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 14: Automated Aurora Failover Lambda and Alarm Link'
+
+Resources:
+  # 1. IAM Role for Lambda
+  FailoverLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RDSFailoverPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:FailoverGlobalCluster
+                  - rds:DescribeGlobalClusters
+                Resource: "*"
+
+  # 2. Lambda Function
+  FailoverFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "DCT-Aurora-Global-Failover"
+      Handler: "index.lambda_handler"
+      Role: !GetAtt FailoverLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 60
+      Environment:
+        Variables:
+          GLOBAL_DB_ID: "dct-global-database"
+          # TARGET_CLUSTER_ARN is your Ohio Cluster ARN
+          TARGET_CLUSTER_ARN: !Sub "arn:aws:rds:us-east-2:${AWS::AccountId}:cluster:DCT-us-east-2-AURORA"
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+
+          GLOBAL_DB_ID = os.environ.get('GLOBAL_DB_ID')
+          TARGET_CLUSTER_ARN = os.environ.get('TARGET_CLUSTER_ARN')
+          rds = boto3.client('rds')
+
+          def lambda_handler(event, context):
+              print(f"🚨 Failover Triggered for Global Cluster: {GLOBAL_DB_ID}")
+              try:
+                  response = rds.describe_global_clusters(GlobalClusterIdentifier=GLOBAL_DB_ID)
+                  status = response['GlobalClusters'][0]['Status']
+                  if status != 'available':
+                      print(f"⚠️ Cluster is in {status} state. Failover might already be in progress.")
+                      return
+                  print(f"🚀 Promoting {TARGET_CLUSTER_ARN} to Primary...")
+                  rds.failover_global_cluster(
+                      GlobalClusterIdentifier=GLOBAL_DB_ID,
+                      TargetDbClusterIdentifier=TARGET_CLUSTER_ARN
+                  )
+                  return {"status": "success"}
+              except Exception as e:
+                  print(f"❌ Failover Failed: {str(e)}")
+                  raise e
+
+  # 3. Permission for CloudWatch to trigger Lambda
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FailoverFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "lambda.alarms.cloudwatch.amazonaws.com"
+
+  # 4. Update the CloudWatch Alarm to trigger the Lambda
+  # Note: This references the Parent Health Check from Step 13
+  Region1FailoverAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: "DCT-REGION1-CRITICAL-FAILOVER"
+      AlarmDescription: "Triggers Lambda to promote Ohio DB if Virginia fails"
+      MetricName: "HealthCheckStatus"
+      Namespace: "AWS/Route53"
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: { "Fn::ImportValue": "REGION-us-east-1-PARENT-HC-ID" }
+      AlarmActions:
+        - !Ref FailoverFunction
+        - !Sub "arn:aws:sns:us-east-1:${AWS::AccountId}:DCT-GLOBAL-FAILOVER-ALERTS"

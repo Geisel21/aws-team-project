@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 1: DCT Active-Active VPC Infrastructure (Multi-AZ HA)'
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 10.1.0.0/16
+  # Subnet CIDRs for AZ1
+  PubSub1Cidr:
+    Type: String
+    Default: 10.1.1.0/24
+  PrivSub1Cidr:
+    Type: String
+    Default: 10.1.2.0/24
+  # Subnet CIDRs for AZ2
+  PubSub2Cidr:
+    Type: String
+    Default: 10.1.3.0/24
+  PrivSub2Cidr:
+    Type: String
+    Default: 10.1.4.0/24
+  RegionalAMI:
+    Type: String
+    Default: "ami-0071c8c431eea0edb"
+
+Resources:
+  DCTVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-VPC"
+
+  # --- AZ1 Subnets ---
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCTVPC
+      CidrBlock: !Ref PubSub1Cidr
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PUB-SUB-1"
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCTVPC
+      CidrBlock: !Ref PrivSub1Cidr
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PRIV-SUB-1"
+
+  # --- AZ2 Subnets ---
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCTVPC
+      CidrBlock: !Ref PubSub2Cidr
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PUB-SUB-2"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCTVPC
+      CidrBlock: !Ref PrivSub2Cidr
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PRIV-SUB-2"
+
+  # --- Route Tables ---
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCTVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PUB-RT"
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCTVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PRIV-RT"
+
+  # --- Route Table Associations ---
+  PubSub1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PubSub2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivSub1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivSub2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+Outputs:
+  VpcId:
+    Value: !Ref DCTVPC
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-VPC-ID" 
+  
+  # Exporting as comma-separated lists for RDS Subnet Groups
+  PublicSubnets:
+    Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ] ]
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PUB-SUBS"
+      
+  PrivateSubnets:
+    Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ] ]
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PRIV-SUBS"
+
+  PublicRouteTable:
+    Value: !Ref PublicRouteTable
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PUB-RT"
+
+  PrivateRouteTable:
+    Value: !Ref PrivateRouteTable
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PRIV-RT"
+
+  ApprovedAMI:
+    Value: !Ref RegionalAMI
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-AMI"

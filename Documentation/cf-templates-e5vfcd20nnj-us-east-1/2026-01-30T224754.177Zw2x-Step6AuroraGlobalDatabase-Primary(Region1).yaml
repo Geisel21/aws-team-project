@@ -1,0 +1,58 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 6: Aurora Global Database - Primary Region (Virginia)'
+
+Resources:
+  # 1. DB Subnet Group (Fixed for Multi-AZ)
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnets for DCT Aurora Primary Cluster"
+      # FIXED: Takes the comma-separated subnets from Step 1 and splits them
+      SubnetIds: !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ]
+      DBSubnetGroupName: !Sub "dct-${AWS::Region}-db-subnet-group"
+
+  # 2. Global Cluster Container
+  GlobalDatabase:
+    Type: AWS::RDS::GlobalCluster
+    Properties:
+      GlobalClusterIdentifier: "dct-global-database"
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.05.2
+
+  # 3. Primary Regional DB Cluster
+  PrimaryDBCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub "DCT-${AWS::Region}-AURORA"
+      GlobalClusterIdentifier: !Ref GlobalDatabase
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.05.2
+      MasterUsername: "admin"
+      ManageMasterUserPassword: true # Automatically creates secret in Secrets Manager
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds: 
+        - Fn::ImportValue: !Sub "REGION-${AWS::Region}-AURORA-SG"
+      BackupRetentionPeriod: 7
+      StorageEncrypted: true
+
+  # 4. Primary DB Instance (Writer)
+  PrimaryDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "DCT-${AWS::Region}-AURORA-INSTANCE-1"
+      DBClusterIdentifier: !Ref PrimaryDBCluster
+      DBInstanceClass: db.t4g.medium
+      Engine: aurora-mysql
+
+Outputs:
+  GlobalClusterId:
+    Description: "Global Database Identifier"
+    Value: !Ref GlobalDatabase
+    Export:
+      Name: "GLOBAL-DB-IDENTIFIER"
+
+  DBClusterEndpoint:
+    Description: "Primary Cluster Endpoint"
+    Value: !GetAtt PrimaryDBCluster.Endpoint
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-DB-ENDPOINT"

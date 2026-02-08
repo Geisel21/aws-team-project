@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 12: Global Route 53 Health Checks and Weighted DNS Routing'
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: "lets.testwitha.click"
+    [cite_start]Description: "The root domain (e.g., yourdomain.com) "
+  
+  # Virginia (us-east-1) Regional Inputs 
+  Region1ALBDNS:
+    Type: String
+    [cite_start]Description: "The DNS name of the Virginia ALB "
+  Region1APIURL:
+    Type: String
+    [cite_start]Description: "The Virginia API Gateway URL (without https://) "
+
+  # Ohio (us-east-2) Regional Inputs 
+  Region2ALBDNS:
+    Type: String
+    [cite_start]Description: "The DNS name of the Ohio ALB "
+  Region2APIURL:
+    Type: String
+    [cite_start]Description: "The Ohio API Gateway URL (without https://) "
+
+Resources:
+  # ==========================================
+  # 1. VIRGINIA HEALTH CHECKS [cite: 26, 27, 28]
+  # ==========================================
+  
+  # ALB Infrastructure Check (Port 80) [cite: 26]
+  Region1ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        FullyQualifiedDomainName: !Ref Region1ALBDNS
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-HC-ALB"
+
+  # API/DB Application Check (Port 443) [cite: 27]
+  Region1APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        FullyQualifiedDomainName: !Ref Region1APIURL
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-HC-API"
+
+  # Parent Health Check (Calculated) 
+  Region1ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks:
+          - !Ref Region1ALBHC
+          - !Ref Region1APIHC
+        [cite_start]HealthThreshold: 2 # Both must be healthy 
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-PARENT-HC"
+
+  # ==========================================
+  # 2. OHIO HEALTH CHECKS [cite: 26, 27, 28]
+  # ==========================================
+  
+  Region2ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        FullyQualifiedDomainName: !Ref Region2ALBDNS
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-HC-ALB"
+
+  Region2APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        FullyQualifiedDomainName: !Ref Region2APIURL
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-HC-API"
+
+  Region2ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks:
+          - !Ref Region2ALBHC
+          - !Ref Region2APIHC
+        HealthThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-PARENT-HC"
+
+  # ==========================================
+  # 3. WEIGHTED DNS RECORDS (api.domain.com) [cite: 29, 30, 31]
+  # ==========================================
+
+  # Virginia CNAME Record [cite: 29, 30]
+  VirginiaWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${DomainName}."
+      Name: !Sub "api.${DomainName}"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "VA-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - !Ref Region1ALBDNS
+      HealthCheckId: !Ref Region1ParentHC
+
+  # Ohio CNAME Record [cite: 29, 31]
+  OhioWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${DomainName}."
+      Name: !Sub "api.${DomainName}"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "OH-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - !Ref Region2ALBDNS
+      HealthCheckId: !Ref Region2ParentHC

@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 13: Global Route 53 Weighted DNS via Secrets Manager Dynamic References'
+
+Resources:
+  # ==========================================
+  # 1. VIRGINIA (REGION 1) HEALTH CHECKS
+  # ==========================================
+  
+  Region1ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        # Dynamically pulling ALB DNS from VA Secret
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.AlbDns}}'
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-HC-ALB"
+
+  Region1APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # Dynamically pulling API URL from VA Secret
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.ApiUrl}}'
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-HC-API"
+
+  Region1ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks:
+          - !Ref Region1ALBHC
+          - !Ref Region1APIHC
+        HealthThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-PARENT-HC"
+
+  # ==========================================
+  # 2. OHIO (REGION 2) HEALTH CHECKS
+  # ==========================================
+  
+  Region2ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        # Dynamically pulling ALB DNS from Ohio Secret
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.AlbDns}}'
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-HC-ALB"
+
+  Region2APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # Dynamically pulling API URL from Ohio Secret
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.ApiUrl}}'
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-HC-API"
+
+  Region2ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks:
+          - !Ref Region2ALBHC
+          - !Ref Region2APIHC
+        HealthThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-PARENT-HC"
+
+  # ==========================================
+  # 3. WEIGHTED DNS RECORDS
+  # ==========================================
+
+  VirginiaWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      # Pulling Domain from Secret
+      HostedZoneName: 
+        Fn::Sub: 
+          - "${Domain}."
+          - Domain: '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:ProjectConfig.DomainName}}'
+      Name: 
+        Fn::Sub: 
+          - "api.${Domain}"
+          - Domain: '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:ProjectConfig.DomainName}}'
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "VA-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.AlbDns}}'
+      HealthCheckId: !Ref Region1ParentHC
+
+  OhioWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: 
+        Fn::Sub: 
+          - "${Domain}."
+          - Domain: '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:ProjectConfig.DomainName}}'
+      Name: 
+        Fn::Sub: 
+          - "api.${Domain}"
+          - Domain: '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:ProjectConfig.DomainName}}'
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "OH-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.AlbDns}}'
+      HealthCheckId: !Ref Region2ParentHC
+
+Outputs:
+  VirginiaParentHC:
+    Value: !Ref Region1ParentHC
+  OhioParentHC:
+    Value: !Ref Region2ParentHC

@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 10: High-Availability Private Web Servers with Automated API Integration'
+
+Parameters:
+  MyDomain:
+    Type: String
+    Default: "lets.testwitha.click"
+  IamProfileName:
+    Type: String
+    Default: "GLOBAL-WEB-EC2-PROFILE"
+
+Resources:
+  # 1. Launch Template: The blueprint for your EC2 instances
+  WebLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "DCT-${AWS::Region}-LT-WEB"
+      LaunchTemplateData:
+        ImageId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-AMI" }
+        InstanceType: "t4g.micro"
+        IamInstanceProfile: 
+          Name: !Ref IamProfileName
+        SecurityGroupIds:
+          - { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EC2-WEB-SG" }
+        
+        # UserData using the !Sub list format to enable the BaseUrl Import
+        UserData:
+          Fn::Base64: 
+            !Sub 
+              - |
+                #!/bin/bash
+                # System Updates & Build Dependencies
+                sudo apt update -y
+                curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+                sudo apt install -y nodejs nginx git
+
+                # Clone Repository
+                cd /home/ubuntu
+                git clone https://github.com/Geisel21/aws-team-project.git
+                cd aws-team-project/team-project
+
+                # Constructing .env.local using the BaseUrl variable defined below
+                cat <<EOT > .env.local
+                VITE_SAVE_URL=${BaseUrl}submit
+                VITE_RETRIEVE_URL=${BaseUrl}retrieve
+                VITE_REGION_URL=${BaseUrl}region
+                EOT
+
+                # Build Vite App
+                npm install && npm run build
+
+                # Set up Web Directory & Nginx Config
+                sudo mkdir -p /var/www/team-project
+                sudo cp -r dist/* /var/www/team-project/
+                sudo chown -R www-data:www-data /var/www/team-project
+
+                cat <<EOT | sudo tee /etc/nginx/sites-available/team-project
+                server {
+                  listen 80;
+                  server_name ${MyDomain};
+                  root /var/www/team-project;
+                  index index.html;
+                  location / {
+                    try_files \$uri \$uri/ /index.html;
+                  }
+                }
+                EOT
+
+                # Enable Site and Restart Nginx
+                sudo ln -sf /etc/nginx/sites-available/team-project /etc/nginx/sites-enabled/
+                sudo rm -f /etc/nginx/sites-enabled/default
+                sudo systemctl restart nginx
+              
+              # --- THIS IS THE IMPORT LINE ---
+              - BaseUrl: 
+                  Fn::ImportValue: !Sub "REGION-${AWS::Region}-API-URL"
+
+  # 2. Auto Scaling Group: Manages availability across Private Subnets
+  WebAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "DCT-${AWS::Region}-ASG-WEB"
+      # Imports private subnets and splits them for the ASG
+      VPCZoneIdentifier: 
+        - !Select [ 0, !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ] ]
+        - !Select [ 1, !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ] ]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebLaunchTemplate
+        Version: !GetAtt WebLaunchTemplate.LatestVersionNumber
+      MinSize: "2"
+      MaxSize: "4"
+      DesiredCapacity: "2"
+      # Automatically registers instances with the Load Balancer from Step 11
+      TargetGroupARNs:
+        - Fn::ImportValue: !Sub "REGION-${AWS::Region}-TARGET-GROUP-ARN"
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-WEB-SERVER"
+          PropagateAtLaunch: true
+
+Outputs:
+  AsgName:
+    Value: !Ref WebAutoScalingGroup
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-ASG-NAME"

@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 13: Global Route 53 - Automated Host Extraction from Secrets'
+
+Resources:
+  # ==========================================
+  # 1. VIRGINIA (REGION 1) HEALTH CHECKS
+  # ==========================================
+  
+  Region1ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.AlbDns}}'
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-HC-ALB"
+
+  Region1APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # DYNAMIC EXTRACTION:
+        # 1. Split by '://' and take index 1 (removes https://)
+        # 2. Split that by '/' and take index 0 (removes /prod/health)
+        FullyQualifiedDomainName: 
+          !Select [ 0, !Split [ "/", !Select [ 1, !Split [ "://", '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.HealthCheckUrl}}' ] ] ] ]
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-HC-API"
+
+  Region1ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks: [!Ref Region1ALBHC, !Ref Region1APIHC]
+        HealthThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-1-PARENT-HC"
+
+  # ==========================================
+  # 2. OHIO (REGION 2) HEALTH CHECKS
+  # ==========================================
+  
+  Region2ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.AlbDns}}'
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-HC-ALB"
+
+  Region2APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # DYNAMIC EXTRACTION for Region 2
+        FullyQualifiedDomainName: 
+          !Select [ 0, !Split [ "/", !Select [ 1, !Split [ "://", '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.HealthCheckUrl}}' ] ] ] ]
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-HC-API"
+
+  Region2ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks: [!Ref Region2ALBHC, !Ref Region2APIHC]
+        HealthThreshold: 2
+      HealthCheckTags:
+        - Key: Name
+          Value: "DCT-US-EAST-2-PARENT-HC"
+
+  # ==========================================
+  # 3. WEIGHTED DNS RECORDS (api.lets.testwitha.click)
+  # ==========================================
+
+  VirginiaWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "lets.testwitha.click."
+      Name: "api.lets.testwitha.click"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "VA-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.AlbDns}}'
+      HealthCheckId: !Ref Region1ParentHC
+
+  OhioWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "lets.testwitha.click."
+      Name: "api.lets.testwitha.click"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "OH-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.AlbDns}}'
+      HealthCheckId: !Ref Region2ParentHC

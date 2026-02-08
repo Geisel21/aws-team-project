@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 10: High-Availability Private Web Servers - Multi-Region Ready'
+
+Parameters:
+  MyDomain:
+    Type: String
+    Default: "lets.testwitha.click"
+  # Use the regional API Gateway URLs for each deployment
+  SaveUrl:
+    Type: String
+  RetrieveUrl:
+    Type: String
+  RegionUrl:
+    Type: String
+  # Passing the IAM Profile name as a parameter avoids the cross-region ImportValue error
+  IamProfileName:
+    Type: String
+    Default: "GLOBAL-WEB-EC2-PROFILE"
+
+Resources:
+  # 1. Launch Template
+  WebLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "DCT-${AWS::Region}-LT-WEB"
+      LaunchTemplateData:
+        ImageId: { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-AMI" }
+        InstanceType: "t4g.micro"
+        # Reference by Parameter to avoid regional export issues
+        IamInstanceProfile: 
+          Name: !Ref IamProfileName
+        SecurityGroupIds:
+          - { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-EC2-WEB-SG" }
+        
+        # 2. UserData: Automated Website Deployment
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo apt update -y
+            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+            sudo apt install -y nodejs nginx git
+
+            cd /home/ubuntu
+            git clone https://github.com/Geisel21/aws-team-project.git
+            cd aws-team-project/team-project
+
+            # Injects local regional endpoints for lower latency
+            cat <<EOT > .env.local
+            VITE_SAVE_URL=${SaveUrl}
+            VITE_RETRIEVE_URL=${RetrieveUrl}
+            VITE_REGION_URL=${RegionUrl}
+            EOT
+
+            npm install && npm run build
+
+            sudo mkdir -p /var/www/team-project
+            sudo cp -r dist/* /var/www/team-project/
+            sudo chown -R www-data:www-data /var/www/team-project
+
+            cat <<EOT | sudo tee /etc/nginx/sites-available/team-project
+            server {
+              listen 80;
+              server_name ${MyDomain};
+              root /var/www/team-project;
+              index index.html;
+              location / {
+                try_files \$uri \$uri/ /index.html;
+              }
+            }
+            EOT
+
+            sudo ln -sf /etc/nginx/sites-available/team-project /etc/nginx/sites-enabled/
+            sudo rm -f /etc/nginx/sites-enabled/default
+            sudo systemctl restart nginx
+
+  # 3. ASG in Private Subnets
+  WebAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "DCT-${AWS::Region}-ASG-WEB"
+      VPCZoneIdentifier: 
+        - !Select [ 0, !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ] ]
+        - !Select [ 1, !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ] ]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebLaunchTemplate
+        Version: !GetAtt WebLaunchTemplate.LatestVersionNumber
+      MinSize: "2"
+      MaxSize: "4"
+      DesiredCapacity: "2"
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-WEB-SERVER"
+          PropagateAtLaunch: true

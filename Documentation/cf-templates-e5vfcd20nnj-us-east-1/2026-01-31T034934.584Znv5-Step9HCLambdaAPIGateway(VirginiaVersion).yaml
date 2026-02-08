@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 9: Regional Health Check Stack - S3 Source with Route 53 Restriction'
+
+Resources:
+  # 1. Health Check Lambda Function (In VPC)
+  # Logic: Checks if DB is 'Read-Only' or 'Write-Capable'
+  HealthCheckLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "DCT-${AWS::Region}-LAMBDA-HC"
+      Runtime: python3.12
+      Handler: lambda_function.lambda_handler
+      # Imports the Global Role created in Step 5
+      Role: 
+        Fn::ImportValue: "GLOBAL-HC-LAMBDA-ROLE-ARN"
+      Code:
+        S3Bucket: "dct-group-project"
+        S3Key: "lambda_hc.zip"
+      Timeout: 15
+      MemorySize: 128
+      # Uses VPC configuration from Step 1 and Step 3
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "REGION-${AWS::Region}-LAMBDA-SG"
+        SubnetIds: !Split [ ",", { "Fn::ImportValue": !Sub "REGION-${AWS::Region}-PRIV-SUBS" } ]
+      Environment:
+        Variables:
+          DB_HOST: 
+            Fn::ImportValue: !Sub "REGION-${AWS::Region}-DB-ENDPOINT"
+          SECRET_ARN:
+            Fn::ImportValue: !Sub "REGION-${AWS::Region}-AURORA-SECRET-ARN"
+
+  # 2. REST API Gateway
+  HealthCheckAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "DCT-${AWS::Region}-API-HC"
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      # Policy: Only allow Route 53 Health Check IP ranges
+      Policy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "StrictRoute53Only"
+            Effect: "Allow"
+            Principal: "*"
+            Action: "execute-api:Invoke"
+            Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*/GET/health"
+            Condition:
+              IpAddress:
+                aws:SourceIp: 
+                  - "pl-062e1d6f8317caab5" # Route 53 Health Checkers
+                  - "pl-05c0959a59362110e"
+
+  # 3. API Resources (/health)
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref HealthCheckAPI
+      ParentId: !GetAtt HealthCheckAPI.RootResourceId
+      PathPart: "health"
+
+  # 4. API Method (GET)
+  HealthMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HealthCheckAPI
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HealthCheckLambda.Arn}/invocations"
+
+  # 5. Permission for API to call Lambda
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt HealthCheckLambda.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HealthCheckAPI}/*/GET/health"
+
+  # 6. Deployment & Stage
+  APIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: HealthMethod
+    Properties:
+      RestApiId: !Ref HealthCheckAPI
+
+  APIStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref HealthCheckAPI
+      DeploymentId: !Ref APIDeployment
+      StageName: prod
+
+Outputs:
+  HealthCheckURL:
+    Description: "Public URL for Route 53 to monitor"
+    Value: !Sub "https://${HealthCheckAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/health"
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-HC-URL"

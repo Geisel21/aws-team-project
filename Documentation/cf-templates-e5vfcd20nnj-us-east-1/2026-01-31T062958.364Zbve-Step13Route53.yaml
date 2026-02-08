@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 13: Global Route 53 - Corrected Health Check Target'
+
+Resources:
+  # ==========================================
+  # 1. VIRGINIA (REGION 1) HEALTH CHECKS
+  # ==========================================
+  Region1ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.AlbDns}}'
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+
+  Region1APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # CORRECTED: Now pointing to the Health Check Host
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.HCHost}}'
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+
+  Region1ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks: [!Ref Region1ALBHC, !Ref Region1APIHC]
+        HealthThreshold: 2
+
+  # ==========================================
+  # 2. OHIO (REGION 2) HEALTH CHECKS
+  # ==========================================
+  Region2ALBHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTP
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.AlbDns}}'
+        Port: 80
+        ResourcePath: "/"
+        RequestInterval: 10
+        FailureThreshold: 2
+
+  Region2APIHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        # CORRECTED: Now pointing to the Health Check Host
+        FullyQualifiedDomainName: '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.HCHost}}'
+        Port: 443
+        ResourcePath: "/prod/health"
+        RequestInterval: 30
+        FailureThreshold: 3
+
+  Region2ParentHC:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: CALCULATED
+        ChildHealthChecks: [!Ref Region2ALBHC, !Ref Region2APIHC]
+        HealthThreshold: 2
+
+  # ==========================================
+  # 3. WEIGHTED DNS RECORDS (api.lets.testwitha.click)
+  # ==========================================
+  VirginiaWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "lets.testwitha.click."
+      Name: "api.lets.testwitha.click"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "VA-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - '{{resolve:secretsmanager:DCT-us-east-1-INFRA-METADATA:SecretString:Application.AlbDns}}'
+      HealthCheckId: !Ref Region1ParentHC
+
+  OhioWeightedRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: "lets.testwitha.click."
+      Name: "api.lets.testwitha.click"
+      Type: CNAME
+      TTL: 60
+      SetIdentifier: "OH-ACTIVE"
+      Weight: 50
+      ResourceRecords:
+        - '{{resolve:secretsmanager:DCT-us-east-2-INFRA-METADATA:SecretString:Application.AlbDns}}'
+      HealthCheckId: !Ref Region2ParentHC

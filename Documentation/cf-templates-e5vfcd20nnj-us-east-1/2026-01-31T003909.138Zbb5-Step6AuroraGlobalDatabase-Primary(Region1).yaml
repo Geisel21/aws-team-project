@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 6: Aurora Global Database - Primary Region (Virginia)'
+
+Resources:
+  # 1. DB Subnet Group
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnets for DCT Aurora Primary Cluster"
+      # FIXED: Clean one-liner syntax to avoid duplication errors
+      SubnetIds: !Split [ ",", !ImportValue !Sub "REGION-${AWS::Region}-PRIV-SUBS" ]
+      DBSubnetGroupName: !Sub "dct-${AWS::Region}-db-subnet-group"
+
+  # 2. Global Cluster Container
+  GlobalDatabase:
+    Type: AWS::RDS::GlobalCluster
+    Properties:
+      GlobalClusterIdentifier: "dct-global-database"
+      Engine: "aurora-mysql"
+      EngineVersion: "8.0.mysql_aurora.3.10.3"
+      StorageEncrypted: true
+
+  # 3. Primary DB Cluster
+  PrimaryDBCluster:
+    Type: AWS::RDS::DBCluster
+    DependsOn: GlobalDatabase
+    Properties:
+      DBClusterIdentifier: !Sub "DCT-${AWS::Region}-AURORA"
+      GlobalClusterIdentifier: !Ref GlobalDatabase
+      Engine: "aurora-mysql"
+      EngineVersion: "8.0.mysql_aurora.3.10.3"
+      EngineMode: "provisioned" # Required for Serverless V2
+      MasterUsername: "admin"
+      MasterUserPassword: "YourSecurePassword123!" 
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds: 
+        - !ImportValue !Sub "REGION-${AWS::Region}-AURORA-SG"
+      BackupRetentionPeriod: 7
+      StorageEncrypted: true
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 2.0
+
+  # 4. Primary DB Instance
+  PrimaryDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "DCT-${AWS::Region}-AURORA-INSTANCE-1"
+      DBClusterIdentifier: !Ref PrimaryDBCluster
+      DBInstanceClass: "db.serverless"
+      Engine: "aurora-mysql"
+      EngineVersion: "8.0.mysql_aurora.3.10.3"
+
+Outputs:
+  GlobalClusterId:
+    Value: !Ref GlobalDatabase
+    Export:
+      Name: "GLOBAL-DB-IDENTIFIER"
+
+  DBClusterEndpoint:
+    # IMPORTANT: Use .Endpoint (Returns the string directly)
+    Value: !GetAtt PrimaryDBCluster.Endpoint.Address
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-DB-ENDPOINT"

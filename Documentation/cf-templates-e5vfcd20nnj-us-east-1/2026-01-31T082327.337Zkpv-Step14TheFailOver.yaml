@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 14: Final Hardened Aurora Failover - SNS/Lambda/Alarm'
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: "aniket.gangwar.92@gmail.com"
+  GlobalDbId:
+    Type: String
+    Default: "dct-global-database"
+
+Resources:
+  # 1. SNS TOPIC (Central Hub for Alerts and Lambda Trigger)
+  FailoverSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: "DCT-GLOBAL-FAILOVER-ALERTS"
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+        - Protocol: lambda
+          Endpoint: !GetAtt FailoverFunction.Arn
+
+  # 2. IAM ROLE (Least Privilege)
+  FailoverLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RDSFailoverPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:FailoverGlobalCluster
+                  - rds:DescribeGlobalClusters
+                Resource: !Sub "arn:aws:rds::${AWS::AccountId}:global-cluster:${GlobalDbId}"
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref FailoverSNSTopic
+
+  # 3. LAMBDA FUNCTION (With Error Reporting to SNS)
+  FailoverFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "DCT-Aurora-Global-Failover"
+      Handler: "index.lambda_handler"
+      Role: !GetAtt FailoverLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 120 
+      Environment:
+        Variables:
+          GLOBAL_DB_ID: !Ref GlobalDbId
+          TARGET_CLUSTER_ARN: !Sub "arn:aws:rds:us-east-2:${AWS::AccountId}:cluster:DCT-us-east-2-AURORA"
+          SNS_TOPIC_ARN: !Ref FailoverSNSTopic
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+
+          GLOBAL_DB_ID = os.environ.get('GLOBAL_DB_ID')
+          TARGET_CLUSTER_ARN = os.environ.get('TARGET_CLUSTER_ARN')
+          SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
+          rds = boto3.client('rds')
+          sns = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              try:
+                  clusters = rds.describe_global_clusters(GlobalClusterIdentifier=GLOBAL_DB_ID)
+                  status = clusters['GlobalClusters'][0]['Status']
+                  
+                  if status != 'available':
+                      print(f"⚠️ Skipping: Cluster {GLOBAL_DB_ID} is {status}")
+                      return {"status": "skipped"}
+
+                  print(f"🚀 Promoting {TARGET_CLUSTER_ARN}...")
+                  rds.failover_global_cluster(
+                      GlobalClusterIdentifier=GLOBAL_DB_ID,
+                      TargetDbClusterIdentifier=TARGET_CLUSTER_ARN
+                  )
+                  return {"status": "success"}
+
+              except Exception as e:
+                  error_msg = f"❌ Failover API Failed for {GLOBAL_DB_ID}: {str(e)}"
+                  print(error_msg)
+                  sns.publish(TopicArn=SNS_TOPIC_ARN, Message=error_msg, Subject="CRITICAL: Failover Automation Failed")
+                  raise e
+
+  # 4. PERMISSIONS & ALARM
+  SNSInvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref FailoverFunction
+      Principal: "sns.amazonaws.com"
+      SourceArn: !Ref FailoverSNSTopic
+
+  Region1FailoverAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: "DCT-REGION1-CRITICAL-FAILOVER"
+      AlarmDescription: "Monitors Virginia Health; Triggers SNS for Alerts/Failover"
+      MetricName: "HealthCheckStatus"
+      Namespace: "AWS/Route53"
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: { "Fn::ImportValue": "REGION-us-east-1-PARENT-HC-ID" }
+      AlarmActions:
+        - !Ref FailoverSNSTopic

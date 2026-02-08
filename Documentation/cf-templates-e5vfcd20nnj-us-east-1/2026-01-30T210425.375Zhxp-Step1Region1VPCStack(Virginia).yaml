@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 1: DCT Active-Active VPC Infrastructure'
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 10.1.0.0/16
+    Description: "CIDR block for the VPC"
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.1.1.0/24
+  PrivateSubnetCidr:
+    Type: String
+    Default: 10.1.2.0/24
+  RegionalAMI:
+    Type: String
+    Description: "The Ubuntu AMI ID for this region"
+    # Virginia: ami-0071c8c431eea0edb | Ohio: ami-01da1dbf9ea3a6ee6
+    Default: "ami-0071c8c431eea0edb"
+
+Resources:
+  # The VPC
+  DCTVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-VPC"
+
+  # Public Subnet
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCTVPC
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PUB-SUB"
+
+  # Private Subnet
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DCTVPC
+      CidrBlock: !Ref PrivateSubnetCidr
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PRIV-SUB"
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCTVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PUB-RT"
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DCTVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "DCT-${AWS::Region}-PRIV-RT"
+
+Outputs:
+  VpcId:
+    Value: !Ref DCTVPC
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-VPC-ID" 
+  PublicSubnet:
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PUB-SUB"
+  PrivateSubnet:
+    Value: !Ref PrivateSubnet
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PRIV-SUB"
+  PublicRouteTable:
+    Value: !Ref PublicRouteTable
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PUB-RT"
+  PrivateRouteTable:
+    Value: !Ref PrivateRouteTable
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-PRIV-RT"
+  ApprovedAMI:
+    Value: !Ref RegionalAMI
+    Export:
+      Name: !Sub "REGION-${AWS::Region}-AMI"

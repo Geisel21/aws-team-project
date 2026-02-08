@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 5: Global IAM Roles - Strict Tiered Serverless Architecture'
+
+Resources:
+  # 1. Management EC2 Role - Direct DB Access for Schema Setup
+  ManagementEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "GLOBAL-MGMT-EC2-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: "DbDirectManagement"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ["rds:*", "secretsmanager:GetSecretValue"]
+                Resource: "*"
+
+  # 2. Web Tier EC2 Role - API Access Only (No DB Access)
+  WebTierEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "GLOBAL-WEB-EC2-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: "ApiConsumptionOnly"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ["execute-api:Invoke"]
+                Resource: !Sub "arn:aws:execute-api:*:${AWS::AccountId}:*/*"
+
+  # 3. Lambda Web Role - The Data Bridge
+  LambdaWebRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "GLOBAL-LAMBDA-WEB-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: "LambdaDataAccess"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ["secretsmanager:GetSecretValue", "rds-db:connect"]
+                Resource: "*"
+
+  # 4. Lambda Health Check Role
+  LambdaHCRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "GLOBAL-LAMBDA-HC-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: "HCMonitoringPermissions"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ["secretsmanager:GetSecretValue", "rds-db:connect", "elasticloadbalancing:Describe*"]
+                Resource: "*"
+
+  # 5. Instance Profiles
+  MgmtInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: "GLOBAL-MGMT-EC2-PROFILE"
+      Roles: [ !Ref ManagementEC2Role ]
+
+  WebInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: "GLOBAL-WEB-EC2-PROFILE"
+      Roles: [ !Ref WebTierEC2Role ]
+
+Outputs:
+  MgmtProfile: { Value: !Ref MgmtInstanceProfile, Export: { Name: "GLOBAL-MGMT-PROFILE" } }
+  WebProfile: { Value: !Ref WebInstanceProfile, Export: { Name: "GLOBAL-WEB-PROFILE" } }
+  WebLambdaRole: { Value: !GetAtt LambdaWebRole.Arn, Export: { Name: "GLOBAL-WEB-LAMBDA-ROLE-ARN" } }
+  HCLambdaRole: { Value: !GetAtt LambdaHCRole.Arn, Export: { Name: "GLOBAL-HC-LAMBDA-ROLE-ARN" } }

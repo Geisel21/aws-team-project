@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Step 5: Global IAM Roles (Split Roles with Deep Health Check DB Access)'
+
+Resources:
+  # 1. Web Lambda Role - Main Application Logic
+  LambdaWebRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "GLOBAL-LAMBDA-WEB-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: "LambdaWebPermissions"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DatabaseAndSecretAccess
+                Effect: Allow
+                Action: 
+                  - "secretsmanager:GetSecretValue"
+                  - "rds-db:connect"
+                Resource: "*"
+
+  # 2. Health Check Lambda Role - Monitoring + Deep DB Heartbeat
+  LambdaHCRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "GLOBAL-LAMBDA-HC-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: "HealthCheckDeepPermissions"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InfrastructureMonitoring
+                Effect: Allow
+                Action: 
+                  - "elasticloadbalancing:Describe*"
+                  - "route53:Get*"
+                  - "route53:List*"
+                Resource: "*"
+              - Sid: DatabaseHeartbeat # Added back for deep health checks
+                Effect: Allow
+                Action: 
+                  - "secretsmanager:GetSecretValue"
+                  - "rds-db:connect"
+                Resource: "*"
+
+  # 3. EC2 Management Role (Crucial for Step 7 Automation)
+  EC2WebRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "GLOBAL-EC2-WEB-ROLE"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: "EC2ManagementPermissions"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - "s3:Get*"
+                  - "s3:List*"
+                  - "secretsmanager:GetSecretValue"
+                  - "rds:DescribeDBClusters"
+                  - "cloudformation:DescribeStacks"
+                Resource: "*"
+
+  # 4. EC2 Instance Profile
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: "GLOBAL-EC2-WEB-PROFILE"
+      Roles:
+        - !Ref EC2WebRole
+
+Outputs:
+  LambdaWebRoleArn:
+    Value: !GetAtt LambdaWebRole.Arn
+    Export:
+      Name: "GLOBAL-LAMBDA-WEB-ROLE-ARN"
+
+  LambdaHCRoleArn:
+    Value: !GetAtt LambdaHCRole.Arn
+    Export:
+      Name: "GLOBAL-LAMBDA-HC-ROLE-ARN"
+
+  EC2InstanceProfileName:
+    Value: !Ref EC2InstanceProfile
+    Export:
+      Name: "GLOBAL-EC2-WEB-PROFILE-NAME"
